@@ -8,4 +8,5 @@ fn main() {
     println!("ROM Title: {}", cartridge.header().title);
     println!("Actual ROM size: {}", cartridge.rom_len());
     println!("Header ROM size: {}", cartridge.header().rom_size);
+    println!("Checksum matches: {}", cartridge.header_checksum_match());
 }
