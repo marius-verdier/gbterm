@@ -11,6 +11,23 @@ const HEADER_CHECKSUM_START: usize = 0x0134;
 const HEADER_CHECKSUM_END: usize = 0x014C;
 const HEADER_CHECKSUM_OFFSET: usize = 0x014D;
 
+const ROM_BANK_0_START: u16 = 0x0000;
+const ROM_BANK_0_END: u16 = 0x3FFF;
+const ROM_SWITCHABLE_BANK_START: u16 = 0x4000;
+const ROM_SWITCHABLE_BANK_END: u16 = 0x7FFF;
+const ROM_BANK_SIZE: usize = 0x4000;
+
+// ROM BANK
+const MBC3_ROM_BANK_SELECT_START: u16 = 0x2000;
+const MBC3_ROM_BANK_SELECT_END: u16 = 0x3FFF;
+const MBC3_ROM_BANK_MASK: u8 = 0x7F;
+
+// RAM
+const MBC3_RAM_ENABLE_START: u16 = 0x0000;
+const MBC3_RAM_ENABLE_END: u16 = 0x1FFF;
+const MBC3_RAM_ENABLE_MASK: u8 = 0x0F;
+const MBC3_RAM_ENABLE_VALUE: u8 = 0x0A;
+
 pub fn rom_size_bytes(code: u8) -> Option<usize> {
     if code > 0x08 {
         return None;
@@ -38,6 +55,33 @@ pub enum CartridgeType {
     Unknown(u8),
 }
 
+pub struct Cartridge {
+    rom: Vec<u8>,
+    ram: Vec<u8>,
+    header: CartridgeHeader,
+    //,
+    active_bank: u8,
+    ram_enabled: bool,
+}
+
+pub struct CartridgeHeader {
+    pub title: String,
+    pub cartridge_type: CartridgeType,
+    pub rom_size: usize,
+    pub ram_size: usize,
+    pub cgb_support: CgbSupport,
+
+    pub computed_checksum: u8,
+    pub stored_checksum: u8,
+}
+
+#[derive(Debug)]
+pub enum CgbSupport {
+    DmgOnly,
+    Supported,
+    Required,
+}
+
 impl CartridgeType {
     pub fn from_code(code: u8) -> Self {
         match code {
@@ -49,16 +93,19 @@ impl CartridgeType {
     }
 }
 
-pub struct Cartridge {
-    rom: Vec<u8>,
-    header: CartridgeHeader,
-}
-
 impl Cartridge {
     pub fn new(rom: Vec<u8>) -> Option<Self> {
         let header = CartridgeHeader::parse(&rom)?;
 
-        Some(Self { rom, header })
+        let ram = vec![0x00; header.ram_size];
+        Some(Self {
+            rom,
+            ram,
+            header,
+            //
+            active_bank: 1u8,
+            ram_enabled: false,
+        })
     }
 
     pub fn from_rom_file(path: impl AsRef<path::Path>) -> Result<Self> {
@@ -74,6 +121,10 @@ impl Cartridge {
         &self.header
     }
 
+    pub fn active_bank(&self) -> u8 {
+        self.active_bank
+    }
+
     pub fn rom_len(&self) -> usize {
         self.rom.len()
     }
@@ -81,17 +132,45 @@ impl Cartridge {
     pub fn header_checksum_match(&self) -> bool {
         self.header().checksum_valid()
     }
-}
 
-pub struct CartridgeHeader {
-    pub title: String,
-    pub cartridge_type: CartridgeType,
-    pub rom_size: usize,
-    pub ram_size: usize,
-    pub cgb_support: CgbSupport,
+    pub fn read(&self, address: u16) -> Option<u8> {
+        match address {
+            ROM_BANK_0_START..=ROM_BANK_0_END => self.rom.get(usize::from(address)).copied(),
 
-    pub computed_checksum: u8,
-    pub stored_checksum: u8,
+            ROM_SWITCHABLE_BANK_START..=ROM_SWITCHABLE_BANK_END => {
+                let bank_start = ROM_BANK_SIZE * usize::from(self.active_bank);
+                let offset_in_bank = usize::from(address - ROM_SWITCHABLE_BANK_START);
+                let index = bank_start + offset_in_bank;
+
+                self.rom.get(index).copied()
+            }
+
+            _ => None,
+        }
+    }
+
+    pub fn write(&mut self, address: u16, value: u8) {
+        if let CartridgeType::Mbc3RamBattery = &self.header.cartridge_type {
+            match address {
+                MBC3_ROM_BANK_SELECT_START..=MBC3_ROM_BANK_SELECT_END => {
+                    let usable_value = match value & MBC3_ROM_BANK_MASK {
+                        0x00 => 1u8,
+                        v => v,
+                    };
+
+                    self.active_bank = usable_value;
+                }
+
+                MBC3_RAM_ENABLE_START..=MBC3_RAM_ENABLE_END => {
+                    let usable_value = value & MBC3_RAM_ENABLE_MASK;
+
+                    self.ram_enabled = usable_value == MBC3_RAM_ENABLE_VALUE;
+                }
+
+                _ => {}
+            }
+        }
+    }
 }
 
 impl CartridgeHeader {
@@ -141,13 +220,6 @@ impl CartridgeHeader {
     }
 }
 
-#[derive(Debug)]
-pub enum CgbSupport {
-    DmgOnly,
-    Supported,
-    Required,
-}
-
 impl CgbSupport {
     pub fn from_flag(flag: u8) -> Self {
         match flag {
@@ -162,5 +234,78 @@ impl CgbSupport {
             Self::DmgOnly => CGB_FLAG_OFFSET,
             Self::Supported | Self::Required => CGB_FLAG_OFFSET - 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_rom() -> Vec<u8> {
+        let mut rom = vec![0u8; 8 * ROM_BANK_SIZE];
+
+        for bank in 0..8 {
+            let start = bank * ROM_BANK_SIZE;
+            let end = start + ROM_BANK_SIZE;
+
+            rom[start..end].fill(bank as u8);
+        }
+
+        rom[0x0147] = 0x13;
+        rom[0x0148] = 0x02;
+        rom[0x0149] = 0x00;
+        rom[0x0143] = 0x00;
+
+        rom
+    }
+
+    #[test]
+    fn reads_default_rom_bank() {
+        let rom = make_test_rom();
+        let cartridge = Cartridge::new(rom).unwrap();
+
+        assert_eq!(cartridge.read(0x4000), Some(0x01));
+    }
+
+    #[test]
+    fn switches_rom_bank() {
+        let rom = make_test_rom();
+        let mut cartridge = Cartridge::new(rom).unwrap();
+
+        assert_eq!(cartridge.read(0x4000), Some(0x01));
+
+        cartridge.write(0x2000, 0x05);
+
+        assert_eq!(cartridge.read(0x4000), Some(0x05));
+    }
+
+    #[test]
+    fn rom_bank_zero_maps_to_one() {
+        let rom = make_test_rom();
+        let mut cartridge = Cartridge::new(rom).unwrap();
+
+        cartridge.write(0x2000, 0x00);
+
+        assert_eq!(cartridge.read(0x4000), Some(0x01));
+    }
+
+    #[test]
+    fn rom_bank_number_is_masked() {
+        let rom = make_test_rom();
+        let mut cartridge = Cartridge::new(rom).unwrap();
+
+        cartridge.write(0x2000, 0x85);
+
+        assert_eq!(cartridge.read(0x4000), Some(0x05));
+    }
+
+    #[test]
+    fn reads_fixed_bank_zero() {
+        let rom = make_test_rom();
+        let mut cartridge = Cartridge::new(rom).unwrap();
+
+        cartridge.write(0x2000, 0x05);
+
+        assert_eq!(cartridge.read(0x0000), Some(0x00));
     }
 }
