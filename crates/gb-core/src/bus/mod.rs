@@ -5,11 +5,13 @@ pub(crate) mod test_utils;
 
 use crate::{
     cartridge::Cartridge,
+    joypad::{Button, Joypad},
 };
 use constants::*;
 
 pub struct Bus {
     cartridge: Cartridge,
+    joypad: Joypad,
 
     vram: [u8; 0x2000],
     wram: [u8; 0x2000],
@@ -23,6 +25,7 @@ impl Bus {
     pub fn new(cartridge: Cartridge) -> Self {
         Self {
             cartridge,
+            joypad: Joypad::new(),
 
             vram: [0u8; 0x2000],
             wram: [0u8; 0x2000],
@@ -64,6 +67,7 @@ impl Bus {
             }
             0xFEA0..=0xFEFF => 0xFF, // Unused memory space
             INTERRUPT_ENABLE_ADDRESS => self.interrupt_enable,
+            JOYPAD_ADDRESS => self.joypad.read(),
             _ => 0xFF,
         }
     }
@@ -99,10 +103,18 @@ impl Bus {
             }
             0xFEA0..=0xFEFF => {} // Unused memory space
             INTERRUPT_ENABLE_ADDRESS => self.interrupt_enable = value,
+            JOYPAD_ADDRESS => self.joypad.write(value),
             _ => {}
         }
     }
 
+    pub fn press_button(&mut self, button: Button) {
+        self.joypad.press(button);
+    }
+
+    pub fn release_button(&mut self, button: Button) {
+        self.joypad.release(button);
+    }
 }
 
 #[cfg(test)]
@@ -186,4 +198,19 @@ mod tests {
         assert_eq!(bus.read8(0xFFFF), 0x15);
     }
 
+    #[test]
+    fn routes_joypad_register() {
+        let mut bus = make_test_bus();
+
+        bus.press_button(Button::A);
+
+        // bit 5 = 0 → button group selected
+        bus.write8(0xFF00, 0b1101_1111);
+
+        assert_eq!(bus.read8(0xFF00) & 0x0F, 0b1110);
+
+        bus.release_button(Button::A);
+
+        assert_eq!(bus.read8(0xFF00) & 0x0F, 0b1111);
+    }
 }
