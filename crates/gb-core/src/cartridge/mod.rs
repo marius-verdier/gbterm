@@ -1,32 +1,8 @@
+mod constants;
+
+use constants::*;
 use std::io::Result;
 use std::path;
-
-const CARTRIDGE_TYPE_OFFSET: usize = 0x0147;
-const ROM_SIZE_OFFSET: usize = 0x0148;
-const CGB_FLAG_OFFSET: usize = 0x0143;
-const TITLE_START_OFFSET: usize = 0x0134;
-const RAM_SIZE_OFFSET: usize = 0x0149;
-
-const HEADER_CHECKSUM_START: usize = 0x0134;
-const HEADER_CHECKSUM_END: usize = 0x014C;
-const HEADER_CHECKSUM_OFFSET: usize = 0x014D;
-
-const ROM_BANK_0_START: u16 = 0x0000;
-const ROM_BANK_0_END: u16 = 0x3FFF;
-const ROM_SWITCHABLE_BANK_START: u16 = 0x4000;
-const ROM_SWITCHABLE_BANK_END: u16 = 0x7FFF;
-const ROM_BANK_SIZE: usize = 0x4000;
-
-// ROM BANK
-const MBC3_ROM_BANK_SELECT_START: u16 = 0x2000;
-const MBC3_ROM_BANK_SELECT_END: u16 = 0x3FFF;
-const MBC3_ROM_BANK_MASK: u8 = 0x7F;
-
-// RAM
-const MBC3_RAM_ENABLE_START: u16 = 0x0000;
-const MBC3_RAM_ENABLE_END: u16 = 0x1FFF;
-const MBC3_RAM_ENABLE_MASK: u8 = 0x0F;
-const MBC3_RAM_ENABLE_VALUE: u8 = 0x0A;
 
 pub fn rom_size_bytes(code: u8) -> Option<usize> {
     if code > 0x08 {
