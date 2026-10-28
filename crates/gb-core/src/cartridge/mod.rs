@@ -1,5 +1,8 @@
 mod constants;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 use constants::*;
 use std::io::Result;
 use std::path;
@@ -251,25 +254,8 @@ impl CgbSupport {
 
 #[cfg(test)]
 mod tests {
+    use super::test_utils::make_test_rom;
     use super::*;
-
-    fn make_test_rom() -> Vec<u8> {
-        let mut rom = vec![0u8; 8 * ROM_BANK_SIZE];
-
-        for bank in 0..8 {
-            let start = bank * ROM_BANK_SIZE;
-            let end = start + ROM_BANK_SIZE;
-
-            rom[start..end].fill(bank as u8);
-        }
-
-        rom[0x0147] = 0x13;
-        rom[0x0148] = 0x02;
-        rom[RAM_SIZE_OFFSET] = 0x03; // RAM SIZE
-        rom[0x0143] = 0x00;
-
-        rom
-    }
 
     #[test]
     fn reads_default_rom_bank() {
