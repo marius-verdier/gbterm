@@ -35,9 +35,11 @@ pub struct Cartridge {
     rom: Vec<u8>,
     ram: Vec<u8>,
     header: CartridgeHeader,
-    //,
+    // rom
     active_bank: u8,
+    // ram
     ram_enabled: bool,
+    active_ram_bank: u8,
 }
 
 pub struct CartridgeHeader {
@@ -78,9 +80,11 @@ impl Cartridge {
             rom,
             ram,
             header,
-            //
+            // rom
             active_bank: 1u8,
+            // ram
             ram_enabled: false,
+            active_ram_bank: 0,
         })
     }
 
@@ -121,6 +125,18 @@ impl Cartridge {
                 self.rom.get(index).copied()
             }
 
+            EXTERNAL_RAM_START..=EXTERNAL_RAM_END => {
+                if !self.ram_enabled {
+                    return None;
+                }
+
+                let bank_start = RAM_BANK_SIZE * usize::from(self.active_ram_bank);
+                let offset_in_bank = usize::from(address - EXTERNAL_RAM_START);
+                let index = bank_start + offset_in_bank;
+
+                self.ram.get(index).copied()
+            }
+
             _ => None,
         }
     }
@@ -142,6 +158,26 @@ impl Cartridge {
 
                     self.ram_enabled = usable_value == MBC3_RAM_ENABLE_VALUE;
                 }
+
+                EXTERNAL_RAM_START..=EXTERNAL_RAM_END => {
+                    if !self.ram_enabled {
+                        return;
+                    }
+
+                    let bank_start = RAM_BANK_SIZE * usize::from(self.active_ram_bank);
+                    let offset_in_bank = usize::from(address - EXTERNAL_RAM_START);
+                    let index = bank_start + offset_in_bank;
+                    if let Some(byte) = self.ram.get_mut(index) {
+                        *byte = value;
+                    }
+                }
+
+                MBC3_RAM_BANK_SELECT_START..=MBC3_RAM_BANK_SELECT_END => match value {
+                    0x00..=0x03 => {
+                        self.active_ram_bank = value;
+                    }
+                    _ => {} // RTC
+                },
 
                 _ => {}
             }
@@ -229,7 +265,7 @@ mod tests {
 
         rom[0x0147] = 0x13;
         rom[0x0148] = 0x02;
-        rom[0x0149] = 0x00;
+        rom[RAM_SIZE_OFFSET] = 0x03; // RAM SIZE
         rom[0x0143] = 0x00;
 
         rom
@@ -283,5 +319,43 @@ mod tests {
         cartridge.write(0x2000, 0x05);
 
         assert_eq!(cartridge.read(0x0000), Some(0x00));
+    }
+
+    #[test]
+    fn external_ram_is_disabled_by_default() {
+        let rom = make_test_rom();
+        let mut cartridge = Cartridge::new(rom).unwrap();
+
+        cartridge.write(0xA000, 0x42);
+        assert_eq!(cartridge.read(0xA000), None);
+    }
+
+    #[test]
+    fn reads_and_writes_external_ram_when_enabled() {
+        let rom = make_test_rom();
+        let mut cartridge = Cartridge::new(rom).unwrap();
+
+        cartridge.write(0x0000, 0x0A);
+        cartridge.write(0xA000, 0x42);
+        assert_eq!(cartridge.read(0xA000), Some(0x42));
+    }
+
+    #[test]
+    fn switches_ram_bank() {
+        let rom = make_test_rom();
+        let mut cartridge = Cartridge::new(rom).unwrap();
+
+        cartridge.write(0x0000, 0x0A);
+
+        cartridge.write(0x4000, 0x01);
+        cartridge.write(0xA000, 0x11);
+        cartridge.write(0x4000, 0x02);
+        cartridge.write(0xA000, 0x22);
+
+        cartridge.write(0x4000, 0x01);
+        assert_eq!(cartridge.read(0xA000), Some(0x11));
+
+        cartridge.write(0x4000, 0x02);
+        assert_eq!(cartridge.read(0xA000), Some(0x22));
     }
 }
