@@ -21,6 +21,27 @@ pub struct Bus {
 
     oam: [u8; 0xA0],
     interrupt_enable: u8,
+    interrupt_flag: u8,
+}
+
+pub enum Interrupt {
+    VBlank,  // 0
+    LcdStat, // 1
+    Timer,   // 2
+    Serial,  // 3
+    Joypad,  // 4
+}
+
+impl Interrupt {
+    fn bit(&self) -> u8 {
+        match self {
+            Self::VBlank => 0,
+            Self::LcdStat => 1,
+            Self::Timer => 2,
+            Self::Serial => 3,
+            Self::Joypad => 4,
+        }
+    }
 }
 
 impl Bus {
@@ -36,6 +57,7 @@ impl Bus {
 
             oam: [0u8; 0xA0],
             interrupt_enable: 0u8,
+            interrupt_flag: 0u8,
         }
     }
 
@@ -70,6 +92,7 @@ impl Bus {
             }
             0xFEA0..=0xFEFF => 0xFF, // Unused memory space
             INTERRUPT_ENABLE_ADDRESS => self.interrupt_enable,
+            INTERRUPT_FLAG_ADDRESS => self.interrupt_flag,
             JOYPAD_ADDRESS => self.joypad.read(),
             DIV_ADDRESS => self.timer.read_div(),
             TIMA_ADDRESS => self.timer.read_tima(),
@@ -110,11 +133,20 @@ impl Bus {
             }
             0xFEA0..=0xFEFF => {} // Unused memory space
             INTERRUPT_ENABLE_ADDRESS => self.interrupt_enable = value,
+            INTERRUPT_FLAG_ADDRESS => self.interrupt_flag = value,
             JOYPAD_ADDRESS => self.joypad.write(value),
-            DIV_ADDRESS => self.timer.write_div(),
+            DIV_ADDRESS => {
+                if self.timer.write_div() {
+                    self.request_interrupt(Interrupt::Timer);
+                }
+            }
             TIMA_ADDRESS => self.timer.write_tima(value),
             TMA_ADDRESS => self.timer.write_tma(value),
-            TAC_ADDRESS => self.timer.write_tac(value),
+            TAC_ADDRESS => {
+                if self.timer.write_tac(value) {
+                    self.request_interrupt(Interrupt::Timer);
+                }
+            }
             _ => {}
         }
     }
@@ -128,7 +160,17 @@ impl Bus {
     }
 
     pub fn tick(&mut self) {
-        self.timer.tick();
+        if self.timer.tick() {
+            self.request_interrupt(Interrupt::Timer);
+        }
+    }
+
+    pub fn request_interrupt(&mut self, interrupt: Interrupt) {
+        self.interrupt_flag |= 1 << interrupt.bit();
+    }
+
+    pub fn pending_interrupts(&self) -> u8 {
+        self.interrupt_flag & self.interrupt_enable & 0x1F
     }
 }
 
@@ -253,5 +295,45 @@ mod tests {
         }
 
         assert_eq!(bus.read8(0xFF05), 1);
+    }
+
+    #[test]
+    fn interrupt_timer_changes_flag() {
+        let mut bus = make_test_bus();
+
+        bus.request_interrupt(Interrupt::Timer);
+
+        assert_eq!(bus.read8(INTERRUPT_FLAG_ADDRESS) & (1 << 2), 1 << 2);
+    }
+
+    #[test]
+    fn interrupt_must_be_requested_and_enabled_to_be_pending() {
+        let mut bus = make_test_bus();
+
+        bus.request_interrupt(Interrupt::Timer);
+
+        // IF Timer = 1, mais IE Timer = 0
+        assert_eq!(bus.pending_interrupts(), 0);
+
+        bus.write8(INTERRUPT_ENABLE_ADDRESS, 1 << 2);
+
+        // IF Timer = 1 et IE Timer = 1
+        assert_eq!(bus.pending_interrupts(), 1 << 2);
+    }
+
+    #[test]
+    fn timer_interrupt_requested() {
+        let mut bus = make_test_bus();
+
+        bus.write8(TIMA_ADDRESS, 0xFF);
+        bus.write8(TMA_ADDRESS, 0x42);
+        bus.write8(TAC_ADDRESS, 0b101);
+
+        for _ in 0..16 {
+            bus.tick();
+        }
+
+        assert_eq!(bus.read8(TIMA_ADDRESS), 0x42);
+        assert_eq!(bus.read8(INTERRUPT_FLAG_ADDRESS) & (1 << 2), 1 << 2);
     }
 }

@@ -19,6 +19,7 @@ pub(super) const OAM_END: u16 = 0xFE9F;
 
 // Interrupt / Enable
 pub(super) const INTERRUPT_ENABLE_ADDRESS: u16 = 0xFFFF;
+pub(super) const INTERRUPT_FLAG_ADDRESS: u16 = 0xFF0F;
 
 // Joypad
 pub(super) const JOYPAD_ADDRESS: u16 = 0xFF00;

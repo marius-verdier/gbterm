@@ -16,7 +16,17 @@ impl Timer {
         }
     }
 
-    pub fn tick(&mut self) {
+    fn increment_tima(&mut self) -> bool {
+        if self.tima == 0xFF {
+            self.tima = self.tma;
+            return true;
+        }
+
+        self.tima = self.tima.wrapping_add(1);
+        return false;
+    }
+
+    pub fn tick(&mut self) -> bool {
         let old_timer = self.timer_signal();
 
         self.divider = self.divider.wrapping_add(1);
@@ -24,8 +34,10 @@ impl Timer {
         let new_timer = self.timer_signal();
 
         if old_timer && !new_timer {
-            self.tima = self.tima.wrapping_add(1);
+            return self.increment_tima();
         }
+
+        false
     }
 
     fn timer_signal(&self) -> bool {
@@ -49,7 +61,7 @@ impl Timer {
         (self.divider >> 8) as u8
     }
 
-    pub fn write_div(&mut self) {
+    pub fn write_div(&mut self) -> bool {
         let old_timer = self.timer_signal();
 
         self.divider = 0;
@@ -57,8 +69,10 @@ impl Timer {
         let new_timer = self.timer_signal();
 
         if old_timer && !new_timer {
-            self.tima = self.tima.wrapping_add(1);
+            return self.increment_tima();
         }
+
+        false
     }
 
     pub fn read_tima(&self) -> u8 {
@@ -78,14 +92,16 @@ impl Timer {
     pub fn read_tac(&self) -> u8 {
         self.tac
     }
-    pub fn write_tac(&mut self, value: u8) {
+    pub fn write_tac(&mut self, value: u8) -> bool {
         let old_timer = self.timer_signal();
         self.tac = value & 0b111;
         let new_timer = self.timer_signal();
 
         if old_timer && !new_timer {
-            self.tima = self.tima.wrapping_add(1);
+            return self.increment_tima();
         }
+
+        false
     }
 }
 
@@ -190,5 +206,39 @@ mod tests {
         timer.write_tac(0);
 
         assert_eq!(timer.read_tima(), 1);
+    }
+
+    #[test]
+    fn tima_overflow_reloads_tma_and_requests_interrupt() {
+        let mut timer = Timer::new();
+
+        timer.write_tima(0xFF);
+        timer.write_tma(0x42);
+        timer.write_tac(0b101);
+
+        let mut interrupt_requested = false;
+
+        for _ in 0..16 {
+            interrupt_requested |= timer.tick();
+        }
+
+        assert_eq!(timer.read_tima(), 0x42);
+        assert!(interrupt_requested);
+    }
+
+    #[test]
+    fn normal_tima_increment_does_not_request_interrupt() {
+        let mut timer = Timer::new();
+
+        timer.write_tac(0b101);
+
+        let mut interrupt_requested = false;
+
+        for _ in 0..16 {
+            interrupt_requested |= timer.tick();
+        }
+
+        assert_eq!(timer.read_tima(), 1);
+        assert!(!interrupt_requested);
     }
 }
