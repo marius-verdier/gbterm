@@ -22,3 +22,9 @@ pub(super) const INTERRUPT_ENABLE_ADDRESS: u16 = 0xFFFF;
 
 // Joypad
 pub(super) const JOYPAD_ADDRESS: u16 = 0xFF00;
+
+// Timer
+pub(super) const DIV_ADDRESS: u16 = 0xFF04;
+pub(super) const TIMA_ADDRESS: u16 = 0xFF05;
+pub(super) const TMA_ADDRESS: u16 = 0xFF06;
+pub(super) const TAC_ADDRESS: u16 = 0xFF07;

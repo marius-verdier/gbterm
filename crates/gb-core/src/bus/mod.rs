@@ -6,12 +6,14 @@ pub(crate) mod test_utils;
 use crate::{
     cartridge::Cartridge,
     joypad::{Button, Joypad},
+    timer::Timer,
 };
 use constants::*;
 
 pub struct Bus {
     cartridge: Cartridge,
     joypad: Joypad,
+    timer: Timer,
 
     vram: [u8; 0x2000],
     wram: [u8; 0x2000],
@@ -26,6 +28,7 @@ impl Bus {
         Self {
             cartridge,
             joypad: Joypad::new(),
+            timer: Timer::new(),
 
             vram: [0u8; 0x2000],
             wram: [0u8; 0x2000],
@@ -68,6 +71,10 @@ impl Bus {
             0xFEA0..=0xFEFF => 0xFF, // Unused memory space
             INTERRUPT_ENABLE_ADDRESS => self.interrupt_enable,
             JOYPAD_ADDRESS => self.joypad.read(),
+            DIV_ADDRESS => self.timer.read_div(),
+            TIMA_ADDRESS => self.timer.read_tima(),
+            TMA_ADDRESS => self.timer.read_tma(),
+            TAC_ADDRESS => self.timer.read_tac(),
             _ => 0xFF,
         }
     }
@@ -104,6 +111,10 @@ impl Bus {
             0xFEA0..=0xFEFF => {} // Unused memory space
             INTERRUPT_ENABLE_ADDRESS => self.interrupt_enable = value,
             JOYPAD_ADDRESS => self.joypad.write(value),
+            DIV_ADDRESS => self.timer.write_div(),
+            TIMA_ADDRESS => self.timer.write_tima(value),
+            TMA_ADDRESS => self.timer.write_tma(value),
+            TAC_ADDRESS => self.timer.write_tac(value),
             _ => {}
         }
     }
@@ -114,6 +125,10 @@ impl Bus {
 
     pub fn release_button(&mut self, button: Button) {
         self.joypad.release(button);
+    }
+
+    pub fn tick(&mut self) {
+        self.timer.tick();
     }
 }
 
@@ -212,5 +227,31 @@ mod tests {
         bus.release_button(Button::A);
 
         assert_eq!(bus.read8(0xFF00) & 0x0F, 0b1111);
+    }
+
+    #[test]
+    fn routes_to_timer_registers() {
+        let mut bus = make_test_bus();
+
+        bus.write8(TIMA_ADDRESS, 0x44);
+        bus.write8(TMA_ADDRESS, 0x66);
+        bus.write8(TAC_ADDRESS, 0b101);
+
+        assert_eq!(bus.read8(TIMA_ADDRESS), 0x44);
+        assert_eq!(bus.read8(TMA_ADDRESS), 0x66);
+        assert_eq!(bus.read8(TAC_ADDRESS) & 0b111, 0b101);
+    }
+
+    #[test]
+    fn bus_ticks_timer() {
+        let mut bus = make_test_bus();
+
+        bus.write8(0xFF07, 0b101);
+
+        for _ in 0..16 {
+            bus.tick();
+        }
+
+        assert_eq!(bus.read8(0xFF05), 1);
     }
 }
