@@ -24,6 +24,7 @@ pub struct Bus {
     interrupt_flag: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Interrupt {
     VBlank,  // 0
     LcdStat, // 1
@@ -33,13 +34,23 @@ pub enum Interrupt {
 }
 
 impl Interrupt {
-    fn bit(&self) -> u8 {
+    pub(crate) fn bit(&self) -> u8 {
         match self {
             Self::VBlank => 0,
             Self::LcdStat => 1,
             Self::Timer => 2,
             Self::Serial => 3,
             Self::Joypad => 4,
+        }
+    }
+
+    pub(crate) fn vector(&self) -> u16 {
+        match self {
+            Self::VBlank => 0x0040,
+            Self::LcdStat => 0x0048,
+            Self::Timer => 0x0050,
+            Self::Serial => 0x0058,
+            Self::Joypad => 0x0060,
         }
     }
 }
@@ -169,8 +180,32 @@ impl Bus {
         self.interrupt_flag |= 1 << interrupt.bit();
     }
 
+    pub fn enable_interrupt(&mut self, interrupt: Interrupt) {
+        self.interrupt_enable |= 1 << interrupt.bit();
+    }
+
     pub fn pending_interrupts(&self) -> u8 {
         self.interrupt_flag & self.interrupt_enable & 0x1F
+    }
+
+    pub fn next_pending_interrupt(&self) -> Option<Interrupt> {
+        let pending = self.pending_interrupts();
+
+        let priority_order = [
+            Interrupt::VBlank,
+            Interrupt::LcdStat,
+            Interrupt::Timer,
+            Interrupt::Serial,
+            Interrupt::Joypad,
+        ];
+
+        priority_order
+            .into_iter()
+            .find(|interrupt| pending & (1 << interrupt.bit()) != 0)
+    }
+
+    pub fn clear_interrupt(&mut self, interrupt: Interrupt) {
+        self.interrupt_flag &= !(1 << interrupt.bit());
     }
 }
 
