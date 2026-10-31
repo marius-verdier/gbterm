@@ -7,6 +7,7 @@ use crate::bus::{Bus, Interrupt};
 pub struct Cpu {
     registers: Registers,
     ime: bool,
+    ime_enable_delay: u8,
     halted: bool,
     halt_bug: bool,
 }
@@ -16,6 +17,7 @@ impl Cpu {
         Self {
             registers: Registers::new(),
             ime: false,
+            ime_enable_delay: 0,
             halted: false,
             halt_bug: false,
         }
@@ -34,6 +36,7 @@ impl Cpu {
         Self {
             registers: register,
             ime: false,
+            ime_enable_delay: 0,
             halted: false,
             halt_bug: false,
         }
@@ -60,6 +63,7 @@ impl Cpu {
     fn service_interrupt(&mut self, bus: &mut Bus, interrupt: Interrupt) -> u8 {
         self.ime = false;
         self.halted = false;
+        self.ime_enable_delay = 0;
 
         bus.clear_interrupt(interrupt);
 
@@ -68,6 +72,18 @@ impl Cpu {
         self.registers.pc = interrupt.vector();
 
         20
+    }
+
+    fn update_ime_delay(&mut self) {
+        if self.ime_enable_delay == 0 {
+            return;
+        }
+
+        self.ime_enable_delay -= 1;
+
+        if self.ime_enable_delay == 0 {
+            self.ime = true;
+        }
     }
 
     pub fn step(&mut self, bus: &mut Bus) -> u8 {
@@ -89,7 +105,7 @@ impl Cpu {
 
         let opcode = self.fetch_byte(bus);
 
-        match opcode {
+        let cycles = match opcode {
             0x00 => 4, // NOP
             0x01 => {
                 // LD BC,d16
@@ -190,26 +206,43 @@ impl Cpu {
 
                     self.write_register_from_code(destination, value);
 
-                    return 8;
-                }
-
-                if destination == 6 {
+                    8
+                } else if destination == 6 {
                     let value = self.read_register_from_code(source);
                     let address = self.registers.hl();
 
                     bus.write8(address, value);
 
-                    return 8;
-                }
+                    8
+                } else {
+                    let value = self.read_register_from_code(source);
+                    self.write_register_from_code(destination, value);
 
-                let value = self.read_register_from_code(source);
-                self.write_register_from_code(destination, value);
+                    4
+                }
+            }
+
+            0xF3 => {
+                // DI
+                self.ime = false;
+                self.ime_enable_delay = 0;
+
+                4
+            }
+
+            0xFB => {
+                // EI
+                self.ime_enable_delay = 2;
 
                 4
             }
 
             _ => todo!("Opcode {opcode:02X} not implemented"),
-        }
+        };
+
+        self.update_ime_delay();
+
+        cycles
     }
 
     fn fetch_byte(&mut self, bus: &Bus) -> u8 {
