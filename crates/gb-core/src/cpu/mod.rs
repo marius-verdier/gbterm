@@ -10,6 +10,7 @@ pub struct Cpu {
     ime_enable_delay: u8,
     halted: bool,
     halt_bug: bool,
+    stopped: bool,
 }
 
 impl Cpu {
@@ -20,6 +21,7 @@ impl Cpu {
             ime_enable_delay: 0,
             halted: false,
             halt_bug: false,
+            stopped: false,
         }
     }
 
@@ -39,6 +41,7 @@ impl Cpu {
             ime_enable_delay: 0,
             halted: false,
             halt_bug: false,
+            stopped: false,
         }
     }
 
@@ -92,6 +95,18 @@ impl Cpu {
             12
         } else {
             8
+        }
+    }
+
+    fn jp_if(&mut self, bus: &Bus, condition: bool) -> u8 {
+        let address = self.fetch_word(bus);
+
+        if condition {
+            self.registers.pc = address;
+
+            16
+        } else {
+            12
         }
     }
 
@@ -295,6 +310,90 @@ impl Cpu {
         self.registers.set_carry_flag(carry);
     }
 
+    fn add_hl(&mut self, value: u16) {
+        let hl = self.registers.hl();
+        let result = hl.wrapping_add(value);
+
+        self.registers.set_subtract_flag(false);
+        self.registers
+            .set_half_carry_flag((hl & 0x0FFF) + (value & 0x0FFF) > 0x0FFF);
+        self.registers
+            .set_carry_flag((hl as u32) + (value as u32) > 0xFFFF);
+
+        self.registers.set_hl(result);
+    }
+
+    fn add_sp_offset(&mut self, offset: i8) -> u16 {
+        let sp = self.registers.sp;
+        let offset_u8 = offset as u8;
+
+        let result = sp.wrapping_add_signed(offset as i16);
+
+        self.registers.set_zero_flag(false);
+        self.registers.set_subtract_flag(false);
+        self.registers
+            .set_half_carry_flag((sp & 0x000F) + ((offset_u8 as u16) & 0x000F) > 0x000F);
+        self.registers
+            .set_carry_flag((sp & 0x00FF) + (offset_u8 as u16) > 0x00FF);
+
+        result
+    }
+
+    fn cpl(&mut self) {
+        self.registers.a = !self.registers.a;
+
+        self.registers.set_subtract_flag(true);
+        self.registers.set_half_carry_flag(true);
+    }
+
+    fn scf(&mut self) {
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(true);
+    }
+
+    fn ccf(&mut self) {
+        let carry = self.registers.carry_flag();
+
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(!carry);
+    }
+
+    fn daa(&mut self) {
+        let mut a = self.registers.a;
+        let mut corr = 0;
+        let mut carry = self.registers.carry_flag();
+
+        if !self.registers.subtract_flag() {
+            if self.registers.half_carry_flag() || (a & 0x0F) > 0x09 {
+                corr |= 0x06;
+            }
+
+            if self.registers.carry_flag() || a > 0x99 {
+                corr |= 0x60;
+                carry = true;
+            }
+
+            a = a.wrapping_add(corr);
+        } else {
+            if self.registers.half_carry_flag() {
+                corr |= 0x06;
+            }
+
+            if self.registers.carry_flag() {
+                corr |= 0x60;
+            }
+
+            a = a.wrapping_sub(corr);
+        }
+
+        self.registers.a = a;
+        self.registers.set_zero_flag(a == 0);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(carry);
+    }
+
     fn update_ime_delay(&mut self) {
         if self.ime_enable_delay == 0 {
             return;
@@ -412,7 +511,7 @@ impl Cpu {
 
         self.registers.set_zero_flag(value & mask == 0);
         self.registers.set_subtract_flag(false);
-        self.registers.set_half_carry_flag(false);
+        self.registers.set_half_carry_flag(true);
     }
 
     fn res(value: u8, bit: u8) -> u8 {
@@ -658,6 +757,14 @@ impl Cpu {
             return 4;
         }
 
+        if self.stopped {
+            if pending.is_none() {
+                return 4;
+            }
+
+            self.stopped = false;
+        }
+
         let opcode = self.fetch_byte(bus);
 
         let cycles = match opcode {
@@ -844,6 +951,23 @@ impl Cpu {
                     4
                 }
             }
+            // INC rr
+            0x03 => {
+                self.registers.set_bc(self.registers.bc().wrapping_add(1));
+                8
+            }
+            0x13 => {
+                self.registers.set_de(self.registers.de().wrapping_add(1));
+                8
+            }
+            0x23 => {
+                self.registers.set_hl(self.registers.hl().wrapping_add(1));
+                8
+            }
+            0x33 => {
+                self.registers.sp = self.registers.sp.wrapping_add(1);
+                8
+            }
 
             0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => {
                 // DEC r
@@ -866,6 +990,23 @@ impl Cpu {
                     4
                 }
             }
+            // DEC rr
+            0x0B => {
+                self.registers.set_bc(self.registers.bc().wrapping_sub(1));
+                8
+            }
+            0x1B => {
+                self.registers.set_de(self.registers.de().wrapping_sub(1));
+                8
+            }
+            0x2B => {
+                self.registers.set_hl(self.registers.hl().wrapping_sub(1));
+                8
+            }
+            0x3B => {
+                self.registers.sp = self.registers.sp.wrapping_sub(1);
+                8
+            }
 
             0x80..=0x87 => {
                 // ADD A, r
@@ -884,6 +1025,24 @@ impl Cpu {
 
                     4
                 }
+            }
+
+            // ADD HL,rr
+            0x09 => {
+                self.add_hl(self.registers.bc());
+                8
+            }
+            0x19 => {
+                self.add_hl(self.registers.de());
+                8
+            }
+            0x29 => {
+                self.add_hl(self.registers.hl());
+                8
+            }
+            0x39 => {
+                self.add_hl(self.registers.sp);
+                8
             }
 
             0x88..=0x8F => {
@@ -1199,6 +1358,195 @@ impl Cpu {
                 self.exec_cb(bus, cb_opcode)
             }
 
+            // LD Memory
+            0x02 => {
+                // BC, A
+                bus.write8(self.registers.bc(), self.registers.a);
+                8
+            }
+            0x12 => {
+                // DE, A
+                bus.write8(self.registers.de(), self.registers.a);
+                8
+            }
+            0x0A => {
+                // A, BC
+                self.registers.a = bus.read8(self.registers.bc());
+                8
+            }
+            0x1A => {
+                // A, DE
+                self.registers.a = bus.read8(self.registers.de());
+                8
+            }
+            0x22 => {
+                // HL+, A
+                let address = self.registers.hl();
+
+                bus.write8(address, self.registers.a);
+                self.registers.set_hl(address.wrapping_add(1));
+
+                8
+            }
+            0x32 => {
+                // HL-, A
+                let address = self.registers.hl();
+
+                bus.write8(address, self.registers.a);
+                self.registers.set_hl(address.wrapping_sub(1));
+
+                8
+            }
+            0x2A => {
+                // A,HL+
+                let address = self.registers.hl();
+
+                self.registers.a = bus.read8(address);
+                self.registers.set_hl(address.wrapping_add(1));
+
+                8
+            }
+            0x3A => {
+                // A,HL-
+                let address = self.registers.hl();
+
+                self.registers.a = bus.read8(address);
+                self.registers.set_hl(address.wrapping_sub(1));
+
+                8
+            }
+            0x36 => {
+                // HL,d8
+                let value = self.fetch_byte(bus);
+                let address = self.registers.hl();
+
+                bus.write8(address, value);
+
+                12
+            }
+            0xEA => {
+                // a16,A
+                let address = self.fetch_word(bus);
+                bus.write8(address, self.registers.a);
+
+                16
+            }
+            0xFA => {
+                // A,a16
+                let address = self.fetch_word(bus);
+                self.registers.a = bus.read8(address);
+
+                16
+            }
+            0x08 => {
+                // a16,SP
+                let address = self.fetch_word(bus);
+                let sp = self.registers.sp;
+
+                bus.write8(address, sp as u8);
+                bus.write8(address.wrapping_add(1), (sp >> 8) as u8);
+
+                20
+            }
+
+            // LDH
+            0xE0 => {
+                // a8, A
+                let offset = self.fetch_byte(bus);
+                let address = 0xFF00u16 + offset as u16;
+
+                bus.write8(address, self.registers.a);
+
+                12
+            }
+            0xF0 => {
+                // A, a8
+                let offset = self.fetch_byte(bus);
+                let address = 0xFF00u16 + offset as u16;
+
+                self.registers.a = bus.read8(address);
+
+                12
+            }
+            0xE2 => {
+                // C, A
+                let address = 0xFF00u16 + self.registers.c as u16;
+
+                bus.write8(address, self.registers.a);
+                8
+            }
+            0xF2 => {
+                // A, C
+                let address = 0xFF00u16 + self.registers.c as u16;
+
+                self.registers.a = bus.read8(address);
+                8
+            }
+
+            0xF9 => {
+                // LD SP, HL
+                self.registers.sp = self.registers.hl();
+                8
+            }
+
+            0xE8 => {
+                // ADD SP,r8
+                let offset = self.fetch_byte(bus) as i8;
+                self.registers.sp = self.add_sp_offset(offset);
+
+                16
+            }
+
+            0xF8 => {
+                // LD HL, SP+r8
+                let offset = self.fetch_byte(bus) as i8;
+                let result = self.add_sp_offset(offset);
+
+                self.registers.set_hl(result);
+                12
+            }
+
+            0x27 => {
+                // DAA
+                self.daa();
+                4
+            }
+            0x2F => {
+                // CPL
+                self.cpl();
+                4
+            }
+            0x37 => {
+                // SCF
+                self.scf();
+                4
+            }
+            0x3F => {
+                // CCF
+                self.ccf();
+                4
+            }
+
+            // JP NZ,a16
+            0xC2 => self.jp_if(bus, !self.registers.zero_flag()),
+            //JP Z,a16
+            0xCA => self.jp_if(bus, self.registers.zero_flag()),
+            // JP NC,a16
+            0xD2 => self.jp_if(bus, !self.registers.carry_flag()),
+            // JP C,a16
+            0xDA => self.jp_if(bus, self.registers.carry_flag()),
+            // JP HL
+            0xE9 => {
+                self.registers.pc = self.registers.hl();
+                4
+            }
+
+            0x10 => {
+                // STOP
+                self.fetch_byte(bus);
+                self.stopped = true;
+                4
+            }
             _ => todo!("Opcode {opcode:02X} not implemented"),
         };
 
@@ -1253,6 +1601,7 @@ mod tests {
     use crate::{
         bus::test_utils::make_test_bus,
         cartridge::{Cartridge, test_utils::make_test_rom},
+        gameboy::GameBoy,
     };
 
     #[test]
@@ -1792,4 +2141,330 @@ mod tests {
         // Four CB-prefixed instructions, 2 bytes each
         assert_eq!(cpu.registers.pc, 0x0108);
     }
+
+    #[test]
+    fn executes_memory_load_instructions() {
+        let mut rom = make_test_rom();
+
+        rom[0x0100] = 0x02; // LD (BC),A
+        rom[0x0101] = 0x0A; // LD A,(BC)
+
+        rom[0x0102] = 0x22; // LD (HL+),A
+        rom[0x0103] = 0x3A; // LD A,(HL-)
+
+        rom[0x0104] = 0x36; // LD (HL),d8
+        rom[0x0105] = 0x77;
+
+        rom[0x0106] = 0xEA; // LD (a16),A
+        rom[0x0107] = 0x00;
+        rom[0x0108] = 0xC2;
+
+        rom[0x0109] = 0xFA; // LD A,(a16)
+        rom[0x010A] = 0x00;
+        rom[0x010B] = 0xC2;
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        cpu.registers.a = 0x42;
+        cpu.registers.set_bc(0xC100);
+        cpu.registers.set_hl(0xC200);
+
+        // LD (BC),A
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(bus.read8(0xC100), 0x42);
+
+        // Change A to ensure LD A,(BC) actually reloads it
+        cpu.registers.a = 0x00;
+
+        // LD A,(BC)
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.a, 0x42);
+
+        // LD (HL+),A
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(bus.read8(0xC200), 0x42);
+        assert_eq!(cpu.registers.hl(), 0xC201);
+
+        // Prepare memory for LD A,(HL-)
+        bus.write8(0xC201, 0x99);
+
+        // LD A,(HL-)
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.a, 0x99);
+        assert_eq!(cpu.registers.hl(), 0xC200);
+
+        // LD (HL),d8
+        assert_eq!(cpu.step(&mut bus), 12);
+        assert_eq!(bus.read8(0xC200), 0x77);
+
+        cpu.registers.a = 0x55;
+
+        // LD (0xC200),A
+        assert_eq!(cpu.step(&mut bus), 16);
+        assert_eq!(bus.read8(0xC200), 0x55);
+
+        cpu.registers.a = 0x00;
+
+        // LD A,(0xC200)
+        assert_eq!(cpu.step(&mut bus), 16);
+        assert_eq!(cpu.registers.a, 0x55);
+
+        assert_eq!(cpu.registers.pc, 0x010C);
+    }
+
+    #[test]
+    fn executes_ldh_instructions() {
+        let mut rom = make_test_rom();
+
+        rom[0x0100] = 0xE0; // LDH (a8),A
+        rom[0x0101] = 0x06; // -> 0xFF06
+
+        rom[0x0102] = 0xF0; // LDH A,(a8)
+        rom[0x0103] = 0x06; // -> 0xFF06
+
+        rom[0x0104] = 0xE2; // LD (C),A
+        rom[0x0105] = 0xF2; // LD A,(C)
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        cpu.registers.a = 0x42;
+        cpu.registers.c = 0x06;
+
+        // LDH (0xFF00 + 0x06),A
+        assert_eq!(cpu.step(&mut bus), 12);
+        assert_eq!(bus.read8(0xFF06), 0x42);
+
+        cpu.registers.a = 0x00;
+
+        // LDH A,(0xFF00 + 0x06)
+        assert_eq!(cpu.step(&mut bus), 12);
+        assert_eq!(cpu.registers.a, 0x42);
+
+        cpu.registers.a = 0x77;
+
+        // LD (0xFF00 + C),A
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(bus.read8(0xFF06), 0x77);
+
+        cpu.registers.a = 0x00;
+
+        // LD A,(0xFF00 + C)
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.a, 0x77);
+
+        assert_eq!(cpu.registers.pc, 0x0106);
+    }
+
+    #[test]
+    fn executes_sp_and_hl_offset_instructions() {
+        let mut rom = make_test_rom();
+
+        rom[0x0100] = 0xE8; // ADD SP,r8
+        rom[0x0101] = 0x08;
+
+        rom[0x0102] = 0xF8; // LD HL,SP+r8
+        rom[0x0103] = 0xF8; // -8
+
+        rom[0x0104] = 0xF9; // LD SP,HL
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        cpu.registers.sp = 0xFFF8;
+
+        // ADD SP,+8
+        // 0xFFF8 + 0x08 = 0x0000
+        assert_eq!(cpu.step(&mut bus), 16);
+        assert_eq!(cpu.registers.sp, 0x0000);
+        assert!(!cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(cpu.registers.half_carry_flag());
+        assert!(cpu.registers.carry_flag());
+
+        // LD HL,SP-8
+        // SP stays unchanged, HL receives 0xFFF8
+        assert_eq!(cpu.step(&mut bus), 12);
+        assert_eq!(cpu.registers.sp, 0x0000);
+        assert_eq!(cpu.registers.hl(), 0xFFF8);
+
+        assert!(!cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+        assert!(!cpu.registers.carry_flag());
+
+        // LD SP,HL
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.sp, 0xFFF8);
+
+        assert_eq!(cpu.registers.pc, 0x0105);
+    }
+
+    #[test]
+    fn executes_daa_cpl_scf_and_ccf() {
+        let mut rom = make_test_rom();
+
+        rom[0x0100] = 0xC6; // ADD A,d8
+        rom[0x0101] = 0x27;
+
+        rom[0x0102] = 0x27; // DAA
+
+        rom[0x0103] = 0xD6; // SUB d8
+        rom[0x0104] = 0x27;
+
+        rom[0x0105] = 0x27; // DAA
+
+        rom[0x0106] = 0x2F; // CPL
+        rom[0x0107] = 0x37; // SCF
+        rom[0x0108] = 0x3F; // CCF
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        cpu.registers.a = 0x15;
+
+        // 0x15 + 0x27 = 0x3C in binary
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.a, 0x3C);
+
+        // DAA converts the binary result into BCD:
+        // 15 + 27 = 42 -> 0x42
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert_eq!(cpu.registers.a, 0x42);
+        assert!(!cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+        assert!(!cpu.registers.carry_flag());
+
+        // 0x42 - 0x27 = 0x1B in binary
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.a, 0x1B);
+        assert!(cpu.registers.subtract_flag());
+
+        // DAA converts the subtraction result back to BCD:
+        // 42 - 27 = 15 -> 0x15
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert_eq!(cpu.registers.a, 0x15);
+        assert!(!cpu.registers.zero_flag());
+        assert!(cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+        assert!(!cpu.registers.carry_flag());
+
+        // CPL flips every bit in A
+        // 0x15 = 0001_0101
+        //      -> 1110_1010 = 0xEA
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert_eq!(cpu.registers.a, 0xEA);
+        assert!(cpu.registers.subtract_flag());
+        assert!(cpu.registers.half_carry_flag());
+
+        // SCF sets carry and clears N/H
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert!(cpu.registers.carry_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+
+        // CCF toggles carry and clears N/H
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert!(!cpu.registers.carry_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+
+        assert_eq!(cpu.registers.pc, 0x0109);
+    }
+
+    #[test]
+    fn executes_inc_and_dec_16_bit_registers() {
+        let mut rom = make_test_rom();
+
+        rom[0x0100] = 0x13; // INC DE
+        rom[0x0101] = 0x23; // INC HL
+        rom[0x0102] = 0x1B; // DEC DE
+        rom[0x0103] = 0x2B; // DEC HL
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        cpu.registers.set_de(0x1234);
+        cpu.registers.set_hl(0xABCD);
+
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.de(), 0x1235);
+
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.hl(), 0xABCE);
+
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.de(), 0x1234);
+
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.hl(), 0xABCD);
+    }
+
+    #[test]
+    fn executes_conditional_jp_and_jp_hl() {
+        let mut rom = make_test_rom();
+
+        // JP NZ,0x0200
+        rom[0x0100] = 0xC2;
+        rom[0x0101] = 0x00;
+        rom[0x0102] = 0x02;
+
+        // JP Z,0x0300
+        rom[0x0200] = 0xCA;
+        rom[0x0201] = 0x00;
+        rom[0x0202] = 0x03;
+
+        // JP HL
+        rom[0x0203] = 0xE9;
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        // NZ is true, so the first jump is taken
+        cpu.registers.set_zero_flag(false);
+
+        assert_eq!(cpu.step(&mut bus), 16);
+        assert_eq!(cpu.registers.pc, 0x0200);
+
+        // Z is false, so this jump is not taken.
+        // The two-byte address operand must still be consumed.
+        assert_eq!(cpu.step(&mut bus), 12);
+        assert_eq!(cpu.registers.pc, 0x0203);
+
+        // JP HL jumps directly to the value stored in HL
+        cpu.registers.set_hl(0x3456);
+
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert_eq!(cpu.registers.pc, 0x3456);
+    }
+
+    #[test]
+    fn cpu_cycles_advance_hardware_clock() {
+        let mut rom = make_test_rom();
+
+        for address in 0x0100..0x0140 {
+            rom[address] = 0x00; // NOP
+        }
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut gb = GameBoy::new(cartridge);
+
+        assert_eq!(gb.get_bus().read8(0xFF04), 0x00);
+
+        // 64 NOPs × 4 T-cycles = 256 T-cycles
+        for _ in 0..64 {
+            assert_eq!(gb.step(), 4);
+        }
+
+        assert_eq!(gb.get_bus().read8(0xFF04), 0x01);
+    }
+
 }

@@ -1,7 +1,9 @@
 pub mod bus;
 pub mod cartridge;
 pub mod cpu;
+pub mod gameboy;
 pub mod joypad;
+pub mod serial;
 pub mod timer;
 
 pub fn add(left: u64, right: u64) -> u64 {

@@ -29,3 +29,7 @@ pub(super) const DIV_ADDRESS: u16 = 0xFF04;
 pub(super) const TIMA_ADDRESS: u16 = 0xFF05;
 pub(super) const TMA_ADDRESS: u16 = 0xFF06;
 pub(super) const TAC_ADDRESS: u16 = 0xFF07;
+
+// Serial
+pub(super) const SERIAL_DATA_ADDRESS: u16 = 0xFF01;
+pub(super) const SERIAL_CONTROL_ADDRESS: u16 = 0xFF02;

@@ -6,6 +6,7 @@ pub(crate) mod test_utils;
 use crate::{
     cartridge::Cartridge,
     joypad::{Button, Joypad},
+    serial::Serial,
     timer::Timer,
 };
 use constants::*;
@@ -14,6 +15,7 @@ pub struct Bus {
     cartridge: Cartridge,
     joypad: Joypad,
     timer: Timer,
+    serial: Serial,
 
     vram: [u8; 0x2000],
     wram: [u8; 0x2000],
@@ -61,6 +63,7 @@ impl Bus {
             cartridge,
             joypad: Joypad::new(),
             timer: Timer::new(),
+            serial: Serial::new(),
 
             vram: [0u8; 0x2000],
             wram: [0u8; 0x2000],
@@ -109,6 +112,8 @@ impl Bus {
             TIMA_ADDRESS => self.timer.read_tima(),
             TMA_ADDRESS => self.timer.read_tma(),
             TAC_ADDRESS => self.timer.read_tac(),
+            SERIAL_DATA_ADDRESS => self.serial.read_data(),
+            SERIAL_CONTROL_ADDRESS => self.serial.read_control(),
             _ => 0xFF,
         }
     }
@@ -156,6 +161,12 @@ impl Bus {
             TAC_ADDRESS => {
                 if self.timer.write_tac(value) {
                     self.request_interrupt(Interrupt::Timer);
+                }
+            }
+            SERIAL_DATA_ADDRESS => self.serial.write_data(value),
+            SERIAL_CONTROL_ADDRESS => {
+                if self.serial.write_control(value) {
+                    self.request_interrupt(Interrupt::Serial);
                 }
             }
             _ => {}
@@ -206,6 +217,10 @@ impl Bus {
 
     pub fn clear_interrupt(&mut self, interrupt: Interrupt) {
         self.interrupt_flag &= !(1 << interrupt.bit());
+    }
+
+    pub fn serial_output(&self) -> &str {
+        self.serial.output()
     }
 }
 
