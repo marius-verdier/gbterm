@@ -11,6 +11,7 @@ pub struct Cpu {
     halted: bool,
     halt_bug: bool,
     stopped: bool,
+    cycles_this_step: u8,
 }
 
 impl Cpu {
@@ -22,6 +23,7 @@ impl Cpu {
             halted: false,
             halt_bug: false,
             stopped: false,
+            cycles_this_step: 0,
         }
     }
 
@@ -42,10 +44,29 @@ impl Cpu {
             halted: false,
             halt_bug: false,
             stopped: false,
+            cycles_this_step: 0,
         }
     }
 
-    fn fetch_word(&mut self, bus: &Bus) -> u16 {
+    fn mcycle(&mut self, bus: &mut Bus) {
+        for _ in 0..4 {
+            bus.tick();
+        }
+
+        self.cycles_this_step += 4;
+    }
+
+    fn read8_timed(&mut self, bus: &mut Bus, address: u16) -> u8 {
+        self.mcycle(bus);
+        bus.read8(address)
+    }
+
+    fn write8_timed(&mut self, bus: &mut Bus, address: u16, value: u8) {
+        self.mcycle(bus);
+        bus.write8(address, value);
+    }
+
+    fn fetch_word(&mut self, bus: &mut Bus) -> u16 {
         let low = self.fetch_byte(bus);
         let high = self.fetch_byte(bus);
 
@@ -57,16 +78,16 @@ impl Cpu {
         let low = word as u8;
 
         self.registers.sp = self.registers.sp.wrapping_sub(1);
-        bus.write8(self.registers.sp, high);
+        self.write8_timed(bus, self.registers.sp, high);
 
         self.registers.sp = self.registers.sp.wrapping_sub(1);
-        bus.write8(self.registers.sp, low);
+        self.write8_timed(bus, self.registers.sp, low);
     }
 
-    fn pop_word(&mut self, bus: &Bus) -> u16 {
-        let low = bus.read8(self.registers.sp);
+    fn pop_word(&mut self, bus: &mut Bus) -> u16 {
+        let low = self.read8_timed(bus, self.registers.sp);
         self.registers.sp = self.registers.sp.wrapping_add(1);
-        let high = bus.read8(self.registers.sp);
+        let high = self.read8_timed(bus, self.registers.sp);
         self.registers.sp = self.registers.sp.wrapping_add(1);
 
         (high as u16) << 8 | low as u16
@@ -86,7 +107,7 @@ impl Cpu {
         20
     }
 
-    fn jr_if(&mut self, bus: &Bus, condition: bool) -> u8 {
+    fn jr_if(&mut self, bus: &mut Bus, condition: bool) -> u8 {
         let offset = self.fetch_byte(bus) as i8;
 
         if condition {
@@ -98,7 +119,7 @@ impl Cpu {
         }
     }
 
-    fn jp_if(&mut self, bus: &Bus, condition: bool) -> u8 {
+    fn jp_if(&mut self, bus: &mut Bus, condition: bool) -> u8 {
         let address = self.fetch_word(bus);
 
         if condition {
@@ -236,6 +257,7 @@ impl Cpu {
     fn call_if(&mut self, bus: &mut Bus, condition: bool) -> u8 {
         let address = self.fetch_word(bus);
         if condition {
+            self.mcycle(bus);
             self.push_word(bus, self.registers.pc);
             self.registers.pc = address;
             24
@@ -244,16 +266,27 @@ impl Cpu {
         }
     }
 
-    fn ret_if(&mut self, bus: &Bus, condition: bool) -> u8 {
+    fn ret_if(&mut self, bus: &mut Bus, condition: bool) -> u8 {
+        self.mcycle(bus);
         if condition {
             self.registers.pc = self.pop_word(bus);
+            self.mcycle(bus);
             20
         } else {
             8
         }
     }
 
+    fn complete_cycles(&mut self, bus: &mut Bus, target_cycles: u8) {
+        while self.cycles_this_step < target_cycles {
+            self.mcycle(bus);
+        }
+
+        debug_assert_eq!(self.cycles_this_step, target_cycles);
+    }
+
     fn rst(&mut self, bus: &mut Bus, address: u16) -> u8 {
+        self.mcycle(bus);
         self.push_word(bus, self.registers.pc);
         self.registers.pc = address;
 
@@ -529,10 +562,10 @@ impl Cpu {
                 let register_code = opcode & 0b111;
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
                     let result = self.rlc(value);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -548,10 +581,10 @@ impl Cpu {
                 let register_code = opcode & 0b111;
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
                     let result = self.rrc(value);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -567,10 +600,10 @@ impl Cpu {
                 let register_code = opcode & 0b111;
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
                     let result = self.rl(value);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -586,10 +619,10 @@ impl Cpu {
                 let register_code = opcode & 0b111;
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
                     let result = self.rr(value);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -605,10 +638,10 @@ impl Cpu {
                 let register_code = opcode & 0b111;
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
                     let result = self.sla(value);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -624,10 +657,10 @@ impl Cpu {
                 let register_code = opcode & 0b111;
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
                     let result = self.sra(value);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -643,10 +676,10 @@ impl Cpu {
                 let register_code = opcode & 0b111;
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
                     let result = self.swap(value);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -662,10 +695,10 @@ impl Cpu {
                 let register_code = opcode & 0b111;
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
                     let result = self.srl(value);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -683,7 +716,7 @@ impl Cpu {
 
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.bit(value, bit);
                     12
@@ -701,11 +734,11 @@ impl Cpu {
 
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     let result = Self::res(value, bit);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -723,11 +756,11 @@ impl Cpu {
 
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     let result = Self::set(value, bit);
 
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
                     16
                 } else {
                     let value = self.read_register_from_code(register_code);
@@ -741,11 +774,15 @@ impl Cpu {
     }
 
     pub fn step(&mut self, bus: &mut Bus) -> u8 {
+        self.cycles_this_step = 0;
         let pending = bus.next_pending_interrupt();
 
         if let Some(interrupt) = pending {
             if self.ime {
-                return self.service_interrupt(bus, interrupt);
+                let cycles = self.service_interrupt(bus, interrupt);
+                self.complete_cycles(bus, cycles);
+
+                return cycles;
             }
 
             if self.halted {
@@ -754,12 +791,18 @@ impl Cpu {
         }
 
         if self.halted {
-            return 4;
+            let cycles = 4;
+            self.complete_cycles(bus, cycles);
+
+            return cycles;
         }
 
         if self.stopped {
             if pending.is_none() {
-                return 4;
+                let cycles = 4;
+                self.complete_cycles(bus, cycles);
+
+                return cycles;
             }
 
             self.stopped = false;
@@ -864,7 +907,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.write_register_from_code(destination, value);
 
@@ -873,7 +916,7 @@ impl Cpu {
                     let value = self.read_register_from_code(source);
                     let address = self.registers.hl();
 
-                    bus.write8(address, value);
+                    self.write8_timed(bus, address, value);
 
                     8
                 } else {
@@ -936,10 +979,10 @@ impl Cpu {
 
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     let result = self.inc(value);
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
 
                     12
                 } else {
@@ -975,10 +1018,10 @@ impl Cpu {
 
                 if register_code == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     let result = self.dec(value);
-                    bus.write8(address, result);
+                    self.write8_timed(bus, address, result);
 
                     12
                 } else {
@@ -1014,7 +1057,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.add_a(value);
 
@@ -1051,7 +1094,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.adc_a(value);
 
@@ -1070,7 +1113,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.sub_a(value);
 
@@ -1089,7 +1132,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.sbc_a(value);
 
@@ -1108,7 +1151,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.and_a(value);
 
@@ -1127,7 +1170,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.xor_a(value);
 
@@ -1146,7 +1189,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.or_a(value);
 
@@ -1165,7 +1208,7 @@ impl Cpu {
 
                 if source == 6 {
                     let address = self.registers.hl();
-                    let value = bus.read8(address);
+                    let value = self.read8_timed(bus, address);
 
                     self.cp_a(value);
 
@@ -1244,24 +1287,28 @@ impl Cpu {
 
             0xC5 => {
                 // PUSH BC
+                self.mcycle(bus);
                 self.push_word(bus, self.registers.bc());
                 16
             }
 
             0xD5 => {
                 // PUSH DE
+                self.mcycle(bus);
                 self.push_word(bus, self.registers.de());
                 16
             }
 
             0xE5 => {
                 // PUSH HL
+                self.mcycle(bus);
                 self.push_word(bus, self.registers.hl());
                 16
             }
 
             0xF5 => {
                 // PUSH AF
+                self.mcycle(bus);
                 self.push_word(bus, self.registers.af());
                 16
             }
@@ -1297,6 +1344,7 @@ impl Cpu {
             0xCD => {
                 // CALL a16
                 let address = self.fetch_word(bus);
+                self.mcycle(bus);
                 self.push_word(bus, self.registers.pc);
 
                 self.registers.pc = address;
@@ -1361,29 +1409,29 @@ impl Cpu {
             // LD Memory
             0x02 => {
                 // BC, A
-                bus.write8(self.registers.bc(), self.registers.a);
+                self.write8_timed(bus, self.registers.bc(), self.registers.a);
                 8
             }
             0x12 => {
                 // DE, A
-                bus.write8(self.registers.de(), self.registers.a);
+                self.write8_timed(bus, self.registers.de(), self.registers.a);
                 8
             }
             0x0A => {
                 // A, BC
-                self.registers.a = bus.read8(self.registers.bc());
+                self.registers.a = self.read8_timed(bus, self.registers.bc());
                 8
             }
             0x1A => {
                 // A, DE
-                self.registers.a = bus.read8(self.registers.de());
+                self.registers.a = self.read8_timed(bus, self.registers.de());
                 8
             }
             0x22 => {
                 // HL+, A
                 let address = self.registers.hl();
 
-                bus.write8(address, self.registers.a);
+                self.write8_timed(bus, address, self.registers.a);
                 self.registers.set_hl(address.wrapping_add(1));
 
                 8
@@ -1392,7 +1440,7 @@ impl Cpu {
                 // HL-, A
                 let address = self.registers.hl();
 
-                bus.write8(address, self.registers.a);
+                self.write8_timed(bus, address, self.registers.a);
                 self.registers.set_hl(address.wrapping_sub(1));
 
                 8
@@ -1401,7 +1449,7 @@ impl Cpu {
                 // A,HL+
                 let address = self.registers.hl();
 
-                self.registers.a = bus.read8(address);
+                self.registers.a = self.read8_timed(bus, address);
                 self.registers.set_hl(address.wrapping_add(1));
 
                 8
@@ -1410,7 +1458,7 @@ impl Cpu {
                 // A,HL-
                 let address = self.registers.hl();
 
-                self.registers.a = bus.read8(address);
+                self.registers.a = self.read8_timed(bus, address);
                 self.registers.set_hl(address.wrapping_sub(1));
 
                 8
@@ -1420,21 +1468,21 @@ impl Cpu {
                 let value = self.fetch_byte(bus);
                 let address = self.registers.hl();
 
-                bus.write8(address, value);
+                self.write8_timed(bus, address, value);
 
                 12
             }
             0xEA => {
                 // a16,A
                 let address = self.fetch_word(bus);
-                bus.write8(address, self.registers.a);
+                self.write8_timed(bus, address, self.registers.a);
 
                 16
             }
             0xFA => {
                 // A,a16
                 let address = self.fetch_word(bus);
-                self.registers.a = bus.read8(address);
+                self.registers.a = self.read8_timed(bus, address);
 
                 16
             }
@@ -1443,8 +1491,8 @@ impl Cpu {
                 let address = self.fetch_word(bus);
                 let sp = self.registers.sp;
 
-                bus.write8(address, sp as u8);
-                bus.write8(address.wrapping_add(1), (sp >> 8) as u8);
+                self.write8_timed(bus, address, sp as u8);
+                self.write8_timed(bus, address.wrapping_add(1), (sp >> 8) as u8);
 
                 20
             }
@@ -1455,7 +1503,7 @@ impl Cpu {
                 let offset = self.fetch_byte(bus);
                 let address = 0xFF00u16 + offset as u16;
 
-                bus.write8(address, self.registers.a);
+                self.write8_timed(bus, address, self.registers.a);
 
                 12
             }
@@ -1464,7 +1512,7 @@ impl Cpu {
                 let offset = self.fetch_byte(bus);
                 let address = 0xFF00u16 + offset as u16;
 
-                self.registers.a = bus.read8(address);
+                self.registers.a = self.read8_timed(bus, address);
 
                 12
             }
@@ -1472,14 +1520,14 @@ impl Cpu {
                 // C, A
                 let address = 0xFF00u16 + self.registers.c as u16;
 
-                bus.write8(address, self.registers.a);
+                self.write8_timed(bus, address, self.registers.a);
                 8
             }
             0xF2 => {
                 // A, C
                 let address = 0xFF00u16 + self.registers.c as u16;
 
-                self.registers.a = bus.read8(address);
+                self.registers.a = self.read8_timed(bus, address);
                 8
             }
 
@@ -1543,20 +1591,24 @@ impl Cpu {
 
             0x10 => {
                 // STOP
-                self.fetch_byte(bus);
+                // self.fetch_byte(bus);
                 self.stopped = true;
                 4
             }
             _ => todo!("Opcode {opcode:02X} not implemented"),
         };
 
+        self.complete_cycles(bus, cycles);
+
         self.update_ime_delay();
 
         cycles
     }
 
-    fn fetch_byte(&mut self, bus: &Bus) -> u8 {
-        let read_opcode = bus.read8(self.registers.pc);
+    fn fetch_byte(&mut self, bus: &mut Bus) -> u8 {
+        let address = self.registers.pc;
+        self.mcycle(bus);
+        let read_opcode = bus.read8(address);
 
         if self.halt_bug {
             self.halt_bug = false;
@@ -1607,10 +1659,10 @@ mod tests {
     #[test]
     fn test_opcode_fetch_and_pc_increment() {
         let mut cpu = Cpu::new();
-        let bus = make_test_bus();
+        let mut bus = make_test_bus();
 
         cpu.registers.pc = 0x4000;
-        assert_eq!(cpu.fetch_byte(&bus), 0x01);
+        assert_eq!(cpu.fetch_byte(&mut bus), 0x01);
         assert_eq!(cpu.registers.pc, 0x4001);
     }
 

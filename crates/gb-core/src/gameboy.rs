@@ -14,13 +14,7 @@ impl GameBoy {
     }
 
     pub fn step(&mut self) -> u8 {
-        let cycles = self.cpu.step(&mut self.bus);
-
-        for _ in 0..cycles {
-            self.bus.tick();
-        }
-
-        cycles
+        self.cpu.step(&mut self.bus)
     }
 
     pub fn get_bus(&self) -> &Bus {
