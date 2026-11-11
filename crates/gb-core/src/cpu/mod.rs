@@ -1,13 +1,8 @@
 mod registers;
 
-use std::hash::DefaultHasher;
-
 use registers::Registers;
 
-use crate::{
-    bus::{Bus, Interrupt},
-    cartridge::CartridgeHeader,
-};
+use crate::bus::{Bus, Interrupt};
 
 pub struct Cpu {
     registers: Registers,
@@ -309,6 +304,340 @@ impl Cpu {
 
         if self.ime_enable_delay == 0 {
             self.ime = true;
+        }
+    }
+
+    fn rlc(&mut self, value: u8) -> u8 {
+        let carry = (value & 0x80) != 0;
+        let result = value.rotate_left(1);
+
+        self.registers.set_zero_flag(result == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(carry);
+
+        result
+    }
+
+    fn rrc(&mut self, value: u8) -> u8 {
+        let carry = (value & 0x01) != 0;
+
+        let result = value.rotate_right(1);
+
+        self.registers.set_zero_flag(result == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(carry);
+
+        result
+    }
+
+    fn rl(&mut self, value: u8) -> u8 {
+        let old_carry = u8::from(self.registers.carry_flag());
+        let carry = (value & 0x80) != 0;
+
+        let result = (value << 1) | old_carry;
+
+        self.registers.set_zero_flag(result == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(carry);
+
+        result
+    }
+
+    fn rr(&mut self, value: u8) -> u8 {
+        let old_carry = u8::from(self.registers.carry_flag());
+        let carry = (value & 0x01) != 0;
+
+        let result = (value >> 1) | (old_carry << 7);
+
+        self.registers.set_zero_flag(result == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(carry);
+
+        result
+    }
+
+    fn sla(&mut self, value: u8) -> u8 {
+        let carry = (value & 0x80) != 0;
+        let result = value << 1;
+
+        self.registers.set_zero_flag(result == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(carry);
+
+        result
+    }
+
+    fn sra(&mut self, value: u8) -> u8 {
+        let carry = (value & 0x01) != 0;
+        let result = (value >> 1) | (value & 0x80);
+
+        self.registers.set_zero_flag(result == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(carry);
+
+        result
+    }
+
+    fn swap(&mut self, value: u8) -> u8 {
+        let result = value.rotate_left(4);
+
+        self.registers.set_zero_flag(result == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(false);
+
+        result
+    }
+
+    fn srl(&mut self, value: u8) -> u8 {
+        let carry = (value & 0x01) != 0;
+        let result = value >> 1;
+
+        self.registers.set_zero_flag(result == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_carry_flag(carry);
+
+        result
+    }
+
+    fn bit(&mut self, value: u8, bit: u8) {
+        let mask = 1 << bit;
+
+        self.registers.set_zero_flag(value & mask == 0);
+        self.registers.set_subtract_flag(false);
+        self.registers.set_half_carry_flag(false);
+    }
+
+    fn res(value: u8, bit: u8) -> u8 {
+        value & !(1 << bit)
+    }
+
+    fn set(value: u8, bit: u8) -> u8 {
+        value | (1 << bit)
+    }
+
+    fn exec_cb(&mut self, bus: &mut Bus, opcode: u8) -> u8 {
+        match opcode {
+            0x00..=0x07 => {
+                // RLC r
+                let register_code = opcode & 0b111;
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+                    let result = self.rlc(value);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = self.rlc(value);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0x08..=0x0F => {
+                // RRC r
+                let register_code = opcode & 0b111;
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+                    let result = self.rrc(value);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = self.rrc(value);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0x10..=0x17 => {
+                // RL r
+                let register_code = opcode & 0b111;
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+                    let result = self.rl(value);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = self.rl(value);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0x18..=0x1F => {
+                // RR r
+                let register_code = opcode & 0b111;
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+                    let result = self.rr(value);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = self.rr(value);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0x20..=0x27 => {
+                // SLA r
+                let register_code = opcode & 0b111;
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+                    let result = self.sla(value);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = self.sla(value);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0x28..=0x2F => {
+                // SRA r
+                let register_code = opcode & 0b111;
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+                    let result = self.sra(value);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = self.sra(value);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0x30..=0x37 => {
+                // SWAP
+                let register_code = opcode & 0b111;
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+                    let result = self.swap(value);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = self.swap(value);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0x38..=0x3F => {
+                // SRL r
+                let register_code = opcode & 0b111;
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+                    let result = self.srl(value);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = self.srl(value);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0x40..=0x7F => {
+                // BIT b,r
+                let bit = (opcode >> 3) & 0b111;
+                let register_code = opcode & 0b111;
+
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+
+                    self.bit(value, bit);
+                    12
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    self.bit(value, bit);
+                    8
+                }
+            }
+
+            0x80..=0xBF => {
+                // RES b,r
+                let bit = (opcode >> 3) & 0b111;
+                let register_code = opcode & 0b111;
+
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+
+                    let result = Self::res(value, bit);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = Self::res(value, bit);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
+
+            0xC0..=0xFF => {
+                // SET b,r
+                let bit = (opcode >> 3) & 0b111;
+                let register_code = opcode & 0b111;
+
+                if register_code == 6 {
+                    let address = self.registers.hl();
+                    let value = bus.read8(address);
+
+                    let result = Self::set(value, bit);
+
+                    bus.write8(address, result);
+                    16
+                } else {
+                    let value = self.read_register_from_code(register_code);
+                    let result = Self::set(value, bit);
+
+                    self.write_register_from_code(register_code, result);
+                    8
+                }
+            }
         }
     }
 
@@ -864,6 +1193,12 @@ impl Cpu {
                 4
             }
 
+            // CB
+            0xCB => {
+                let cb_opcode = self.fetch_byte(bus);
+                self.exec_cb(bus, cb_opcode)
+            }
+
             _ => todo!("Opcode {opcode:02X} not implemented"),
         };
 
@@ -1342,5 +1677,119 @@ mod tests {
         // 0x0103 contient NOP
         assert_eq!(cpu.step(&mut bus), 4);
         assert_eq!(cpu.registers.pc, 0x0104);
+    }
+
+    #[test]
+    fn executes_cb_rlc_register_and_memory() {
+        let mut rom = make_test_rom();
+
+        // CB 00 → RLC B
+        rom[0x0100] = 0xCB;
+        rom[0x0101] = 0x00;
+
+        // CB 06 → RLC [HL]
+        rom[0x0102] = 0xCB;
+        rom[0x0103] = 0x06;
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        cpu.registers.b = 0x81;
+        cpu.registers.set_hl(0xC123);
+
+        bus.write8(0xC123, 0x00);
+
+        // RLC B
+        // 1000_0001 → 0000_0011
+        assert_eq!(cpu.step(&mut bus), 8);
+
+        assert_eq!(cpu.registers.b, 0x03);
+        assert!(cpu.registers.carry_flag());
+        assert!(!cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+
+        assert_eq!(cpu.registers.pc, 0x0102);
+
+        // RLC [HL]
+        // 0000_0000 → 0000_0000
+        // Z should be 1
+        assert_eq!(cpu.step(&mut bus), 16);
+
+        assert_eq!(bus.read8(0xC123), 0x00);
+        assert!(!cpu.registers.carry_flag());
+        assert!(cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+
+        assert_eq!(cpu.registers.pc, 0x0104);
+    }
+
+    #[test]
+    fn executes_cb_shift_and_swap_operations() {
+        let mut rom = make_test_rom();
+
+        rom[0x0100] = 0xCB;
+        rom[0x0101] = 0x20; // SLA B
+
+        rom[0x0102] = 0xCB;
+        rom[0x0103] = 0x29; // SRA C
+
+        rom[0x0104] = 0xCB;
+        rom[0x0105] = 0x32; // SWAP D
+
+        rom[0x0106] = 0xCB;
+        rom[0x0107] = 0x3B; // SRL E
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        cpu.registers.b = 0x81;
+        cpu.registers.c = 0x83;
+        cpu.registers.d = 0xA3;
+        cpu.registers.e = 0x83;
+
+        // SLA B
+        // 1000_0001 -> 0000_0010
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.b, 0x02);
+        assert!(cpu.registers.carry_flag());
+        assert!(!cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+
+        // SRA C
+        // 1000_0011 -> 1100_0001
+        // The most significant bit is preserved
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.c, 0xC1);
+        assert!(cpu.registers.carry_flag());
+        assert!(!cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+
+        // SWAP D
+        // 1010_0011 -> 0011_1010
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.d, 0x3A);
+        assert!(!cpu.registers.carry_flag());
+        assert!(!cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+
+        // SRL E
+        // 1000_0011 -> 0100_0001
+        // Unlike SRA, the most significant bit becomes 0
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.e, 0x41);
+        assert!(cpu.registers.carry_flag());
+        assert!(!cpu.registers.zero_flag());
+        assert!(!cpu.registers.subtract_flag());
+        assert!(!cpu.registers.half_carry_flag());
+
+        // Four CB-prefixed instructions, 2 bytes each
+        assert_eq!(cpu.registers.pc, 0x0108);
     }
 }
