@@ -2467,4 +2467,141 @@ mod tests {
         assert_eq!(gb.get_bus().read8(0xFF04), 0x01);
     }
 
+    #[test]
+    fn triggers_halt_bug_when_interrupt_is_pending_with_ime_disabled() {
+        let mut rom = make_test_rom();
+
+        rom[0x0100] = 0x76; // HALT
+        rom[0x0101] = 0x3E; // LD A,d8
+        rom[0x0102] = 0x42;
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut bus = Bus::new(cartridge);
+        let mut cpu = Cpu::new_dmg();
+
+        cpu.ime = false;
+
+        bus.enable_interrupt(Interrupt::Timer);
+        bus.request_interrupt(Interrupt::Timer);
+
+        // HALT triggers the HALT bug instead of actually halting.
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert!(!cpu.halted);
+        assert_eq!(cpu.registers.pc, 0x0101);
+
+        // Because of the HALT bug, the opcode fetch does not increment PC.
+        //
+        // LD A,d8 reads:
+        // opcode    = 0x3E at 0x0101
+        // immediate = 0x3E at 0x0101 again
+        //
+        // So A becomes 0x3E instead of 0x42.
+        assert_eq!(cpu.step(&mut bus), 8);
+        assert_eq!(cpu.registers.a, 0x3E);
+        assert_eq!(cpu.registers.pc, 0x0102);
+    }
+
+    fn run_blargg_test(filename: &str) {
+        let path = format!("../../rom/tests/blargg/{filename}");
+
+        let rom =
+            std::fs::read(&path).unwrap_or_else(|_| panic!("Blargg test ROM not found: {path}"));
+
+        let cartridge = Cartridge::new(rom).unwrap();
+        let mut gb = GameBoy::new(cartridge);
+
+        for _ in 0..10_000_000 {
+            gb.step();
+
+            let output = gb.serial_output();
+
+            if output.contains("Passed") {
+                return;
+            }
+
+            if output.contains("Failed") {
+                panic!("Blargg test failed: {filename}\n\nSerial output:\n{output}");
+            }
+        }
+
+        panic!(
+            "Blargg test timed out: {filename}\n\nSerial output:\n{}",
+            gb.serial_output()
+        );
+    }
+
+    #[test]
+    fn passes_blargg_01_special() {
+        run_blargg_test("01-special.gb");
+    }
+
+    #[test]
+    fn passes_blargg_02_interrupts() {
+        run_blargg_test("02-interrupts.gb");
+    }
+
+    #[test]
+    fn passes_blargg_03_op_sp_hl() {
+        run_blargg_test("03-op sp,hl.gb");
+    }
+
+    #[test]
+    fn passes_blargg_04_op_r_imm() {
+        run_blargg_test("04-op r,imm.gb");
+    }
+
+    #[test]
+    fn passes_blargg_05_op_rp() {
+        run_blargg_test("05-op rp.gb");
+    }
+
+    #[test]
+    fn passes_blargg_06_ld_r_r() {
+        run_blargg_test("06-ld r,r.gb");
+    }
+
+    #[test]
+    fn passes_blargg_07_jr_jp_call_ret_rst() {
+        run_blargg_test("07-jr,jp,call,ret,rst.gb");
+    }
+
+    #[test]
+    fn passes_blargg_08_misc_instrs() {
+        run_blargg_test("08-misc instrs.gb");
+    }
+
+    #[test]
+    fn passes_blargg_09_op_r_r() {
+        run_blargg_test("09-op r,r.gb");
+    }
+
+    #[test]
+    fn passes_blargg_10_bit_ops() {
+        run_blargg_test("10-bit ops.gb");
+    }
+
+    #[test]
+    fn passes_blargg_11_op_a_hl() {
+        run_blargg_test("11-op a,(hl).gb");
+    }
+
+    #[test]
+    fn passes_blargg_instr_timing() {
+        run_blargg_test("instr_timing.gb");
+    }
+
+    #[test]
+    fn passes_blargg_mem_timing_read() {
+        run_blargg_test("01-read_timing.gb");
+    }
+
+    #[test]
+    fn passes_blargg_mem_timing_write() {
+        run_blargg_test("02-write_timing.gb");
+    }
+
+    #[test]
+    fn passes_blargg_mem_timing_modify() {
+        run_blargg_test("03-modify_timing.gb");
+    }
 }
