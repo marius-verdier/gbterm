@@ -33,3 +33,6 @@ pub(super) const TAC_ADDRESS: u16 = 0xFF07;
 // Serial
 pub(super) const SERIAL_DATA_ADDRESS: u16 = 0xFF01;
 pub(super) const SERIAL_CONTROL_ADDRESS: u16 = 0xFF02;
+
+// DMA
+pub(super) const DMA_ADDRESS: u16 = 0xFF46;

@@ -22,6 +22,13 @@ pub struct Bus {
     hram: [u8; 0x7F],
 
     oam: [u8; 0xA0],
+
+    dma: u8,
+    dma_active: bool,
+    dma_source: u16,
+    dma_index: u16,
+    dma_ticks: u8,
+
     interrupt_enable: u8,
     interrupt_flag: u8,
 }
@@ -70,8 +77,53 @@ impl Bus {
             hram: [0u8; 0x7F],
 
             oam: [0u8; 0xA0],
+
+            dma: 0u8,
+            dma_active: false,
+            dma_source: 0u16,
+            dma_index: 0u16,
+            dma_ticks: 0u8,
+
             interrupt_enable: 0u8,
             interrupt_flag: 0u8,
+        }
+    }
+
+    fn start_dma(&mut self, value: u8) {
+        self.dma = value;
+
+        self.dma_source = (value as u16) << 8;
+        self.dma_index = 0;
+        self.dma_ticks = 0;
+        self.dma_active = true;
+    }
+
+    pub fn dma_active(&self) -> bool {
+        self.dma_active
+    }
+
+    fn tick_dma(&mut self) {
+        if !self.dma_active {
+            return;
+        }
+
+        self.dma_ticks += 1;
+
+        if self.dma_ticks < 4 {
+            return;
+        }
+
+        self.dma_ticks = 0;
+
+        let source_address = self.dma_source + self.dma_index;
+        let value = self.read8(source_address);
+
+        self.oam[self.dma_index as usize] = value;
+
+        self.dma_index += 1;
+
+        if self.dma_index == 0xA0 {
+            self.dma_active = false;
         }
     }
 
@@ -114,6 +166,7 @@ impl Bus {
             TAC_ADDRESS => self.timer.read_tac(),
             SERIAL_DATA_ADDRESS => self.serial.read_data(),
             SERIAL_CONTROL_ADDRESS => self.serial.read_control(),
+            DMA_ADDRESS => self.dma,
             _ => 0xFF,
         }
     }
@@ -169,6 +222,7 @@ impl Bus {
                     self.request_interrupt(Interrupt::Serial);
                 }
             }
+            DMA_ADDRESS => self.start_dma(value),
             _ => {}
         }
     }
@@ -185,6 +239,8 @@ impl Bus {
         if self.timer.tick() {
             self.request_interrupt(Interrupt::Timer);
         }
+
+        self.tick_dma();
     }
 
     pub fn request_interrupt(&mut self, interrupt: Interrupt) {
@@ -221,6 +277,22 @@ impl Bus {
 
     pub fn serial_output(&self) -> &str {
         self.serial.output()
+    }
+
+    pub fn cpu_read8(&self, address: u16) -> u8 {
+        if self.dma_active && !(0xFF80..=0xFFFE).contains(&address) {
+            return 0xFF;
+        }
+
+        self.read8(address)
+    }
+
+    pub fn cpu_write8(&mut self, address: u16, value: u8) {
+        if self.dma_active && !(0xFF80..=0xFFFE).contains(&address) {
+            return;
+        }
+
+        self.write8(address, value)
     }
 }
 
@@ -372,18 +444,92 @@ mod tests {
     }
 
     #[test]
-    fn timer_interrupt_requested() {
+    fn timer_interrupt_requested_after_delayed_reload() {
         let mut bus = make_test_bus();
 
-        bus.write8(TIMA_ADDRESS, 0xFF);
-        bus.write8(TMA_ADDRESS, 0x42);
-        bus.write8(TAC_ADDRESS, 0b101);
+        bus.write8(0xFF05, 0xFF); // TIMA
+        bus.write8(0xFF06, 0x42); // TMA
+        bus.write8(0xFF07, 0b101); // Enable timer, divider bit 3
 
+        // Reach the falling edge that causes the overflow.
         for _ in 0..16 {
             bus.tick();
         }
 
-        assert_eq!(bus.read8(TIMA_ADDRESS), 0x42);
-        assert_eq!(bus.read8(INTERRUPT_FLAG_ADDRESS) & (1 << 2), 1 << 2);
+        // TIMA has overflowed but has not reloaded yet.
+        assert_eq!(bus.read8(0xFF05), 0x00);
+        assert_eq!(bus.read8(0xFF0F) & (1 << 2), 0);
+
+        // Wait for the four-cycle reload delay.
+        for _ in 0..4 {
+            bus.tick();
+        }
+
+        // TIMA reloads from TMA and requests the timer interrupt.
+        assert_eq!(bus.read8(0xFF05), 0x42);
+        assert_ne!(bus.read8(0xFF0F) & (1 << 2), 0);
+    }
+
+    #[test]
+    fn dma_completes_after_640_t_cycles() {
+        let mut bus = make_test_bus();
+
+        for offset in 0..0xA0u16 {
+            bus.write8(0xC000 + offset, offset as u8);
+        }
+
+        bus.write8(0xFF46, 0xC0);
+
+        for _ in 0..639 {
+            bus.tick();
+        }
+
+        assert!(bus.dma_active);
+
+        bus.tick();
+
+        assert!(!bus.dma_active);
+
+        for offset in 0..0xA0u16 {
+            assert_eq!(bus.read8(0xFE00 + offset), offset as u8,);
+        }
+    }
+
+    #[test]
+    fn cpu_cannot_read_wram_during_dma() {
+        let mut bus = make_test_bus();
+
+        bus.write8(0xC000, 0x42);
+
+        assert_eq!(bus.cpu_read8(0xC000), 0x42);
+
+        bus.write8(0xFF46, 0xC0);
+
+        assert_eq!(bus.cpu_read8(0xC000), 0xFF);
+    }
+
+    #[test]
+    fn cpu_cannot_write_wram_during_dma() {
+        let mut bus = make_test_bus();
+
+        bus.write8(0xC100, 0x11);
+
+        bus.write8(0xFF46, 0xC0);
+
+        bus.cpu_write8(0xC100, 0x99);
+
+        // Raw/internal read: verify that the CPU write was ignored.
+        assert_eq!(bus.read8(0xC100), 0x11);
+    }
+
+    #[test]
+    fn cpu_can_access_hram_during_dma() {
+        let mut bus = make_test_bus();
+
+        bus.write8(0xFF46, 0xC0);
+
+        bus.cpu_write8(0xFF80, 0x42);
+
+        assert_eq!(bus.cpu_read8(0xFF80), 0x42);
     }
 }

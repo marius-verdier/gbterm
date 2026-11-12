@@ -58,12 +58,12 @@ impl Cpu {
 
     fn read8_timed(&mut self, bus: &mut Bus, address: u16) -> u8 {
         self.mcycle(bus);
-        bus.read8(address)
+        bus.cpu_read8(address)
     }
 
     fn write8_timed(&mut self, bus: &mut Bus, address: u16, value: u8) {
         self.mcycle(bus);
-        bus.write8(address, value);
+        bus.cpu_write8(address, value);
     }
 
     fn fetch_word(&mut self, bus: &mut Bus) -> u16 {
@@ -100,7 +100,12 @@ impl Cpu {
 
         bus.clear_interrupt(interrupt);
 
+        self.mcycle(bus);
+        self.mcycle(bus);
+
         self.push_word(bus, self.registers.pc);
+
+        self.mcycle(bus);
 
         self.registers.pc = interrupt.vector();
 
@@ -1608,7 +1613,7 @@ impl Cpu {
     fn fetch_byte(&mut self, bus: &mut Bus) -> u8 {
         let address = self.registers.pc;
         self.mcycle(bus);
-        let read_opcode = bus.read8(address);
+        let read_opcode = bus.cpu_read8(address);
 
         if self.halt_bug {
             self.halt_bug = false;
@@ -2655,5 +2660,43 @@ mod tests {
     #[test]
     fn passes_blargg_mem_timing_modify() {
         run_blargg_test("03-modify_timing.gb");
+    }
+
+    #[test]
+    fn cpu_can_execute_from_hram_during_dma() {
+        let mut bus = make_test_bus();
+        let mut cpu = Cpu::new();
+
+        // Program in HRAM:
+        // LD A, $42
+        // NOP
+        bus.write8(0xFF80, 0x3E);
+        bus.write8(0xFF81, 0x42);
+        bus.write8(0xFF82, 0x00);
+
+        cpu.registers.pc = 0xFF80;
+
+        // Prepare some DMA source data.
+        bus.write8(0xC000, 0x99);
+
+        // Start OAM DMA from C000.
+        bus.write8(0xFF46, 0xC0);
+
+        assert!(bus.dma_active());
+
+        // LD A,$42 = 8 T-cycles.
+        cpu.step(&mut bus);
+
+        assert_eq!(cpu.registers.a, 0x42);
+        assert_eq!(cpu.registers.pc, 0xFF82);
+
+        // DMA must also have progressed while the CPU was executing.
+        assert_eq!(bus.read8(0xFE00), 0x99);
+
+        // CPU can continue fetching from HRAM.
+        cpu.step(&mut bus);
+
+        assert_eq!(cpu.registers.pc, 0xFF83);
+        assert!(bus.dma_active());
     }
 }
